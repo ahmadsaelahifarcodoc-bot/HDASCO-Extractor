@@ -186,6 +186,23 @@ def _all_text(node):
     return {child.tag: (child.text or "").strip() for child in list(node)}
 
 
+def _first_descendant_text(node, candidate_names):
+    """Find a non-empty value anywhere below node, ignoring namespace prefixes."""
+    wanted = {name.lower() for name in candidate_names}
+    for element in node.iter():
+        local_name = element.tag.rsplit("}", 1)[-1].split(":")[-1].lower()
+        if local_name in wanted and (element.text or "").strip():
+            return (element.text or "").strip()
+    return ""
+
+
+def _has_content(node):
+    """Do not export placeholder/empty pricing elements as blank Excel rows."""
+    if (node.text or "").strip():
+        return True
+    return any((child.text or "").strip() for child in node.iter() if child is not node)
+
+
 def export_xml_folder(xml_dir, export_dir, log):
     xml_files = sorted(Path(xml_dir).glob("*.xml"))
     if not xml_files:
@@ -210,8 +227,13 @@ def export_xml_folder(xml_dir, export_dir, log):
         for bl in bl_records:
             b = _all_text(bl)
             common = {**base, **b}
-            bl_no = common.get("BLNo") or common.get("BLNumber") or common.get("BL") or file.stem
-            summary.append({"SourceFile": file.name, **common, "BL_Number": bl_no})
+            bl_no = (common.get("BLNO") or common.get("BLNo") or common.get("BLNumber")
+                     or common.get("BL") or _first_descendant_text(bl, ["BLNO", "BLNo", "BLNumber"]) or file.stem)
+            # Shipper information is sometimes nested and therefore absent from _all_text's direct children.
+            shipper = (common.get("Shipper") or common.get("ShipperName") or common.get("ShipperDetails")
+                       or _first_descendant_text(bl, ["Shipper", "ShipperName", "Shipper_Name", "ShipperDetails", "Consignor", "ExporterName"]) 
+                       or _first_descendant_text(manifest, ["Shipper", "ShipperName", "Shipper_Name", "ShipperDetails", "Consignor", "ExporterName"]))
+            summary.append({"SourceFile": file.name, **common, "BL_Number": bl_no, "Shipper": shipper})
             for container in bl.findall(".//Container"):
                 c = _all_text(container)
                 cno = c.get("ContainerNo") or c.get("ContainerNumber") or c.get("No") or ""
@@ -224,12 +246,13 @@ def export_xml_folder(xml_dir, export_dir, log):
                 for pkg in pkg_nodes:
                     packages.append({"SourceFile": file.name, "BL_Number": bl_no, "ContainerNo": cno, **_all_text(pkg)})
             for node in bl.findall(".//Pricing/*") + bl.findall(".//PricingData/*"):
-                pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
+                if _has_content(node):
+                    pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
             # Flexible fallback for common pricing/cost structures, avoiding duplicate Price nodes.
             price_nodes = bl.findall(".//Price") + bl.findall(".//Rate") + bl.findall(".//Charge")
             known_ids = {id(n) for n in bl.findall(".//Pricing/*") + bl.findall(".//PricingData/*")}
             for node in price_nodes:
-                if id(node) not in known_ids:
+                if id(node) not in known_ids and _has_content(node):
                     pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
     output = Path(export_dir) / "HDASCO_BL_Export.xlsx"
     wb = Workbook()
