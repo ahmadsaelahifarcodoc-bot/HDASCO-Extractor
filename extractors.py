@@ -254,18 +254,60 @@ def export_xml_folder(xml_dir, export_dir, log):
             for node in price_nodes:
                 if id(node) not in known_ids and _has_content(node):
                     pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
-    # Combine every record type into one worksheet. Each row is tagged so the
-    # user can filter BL, container, package, or pricing records in Excel.
+    # Combine every record type into one worksheet. Repeat the BL summary
+    # fields on every container/package/pricing row for that same BL.
     output = Path(export_dir) / "HDASCO_BL_Export.xlsx"
     combined = []
+    summary_by_key = {}
     for record in summary:
+        key = (record.get("SourceFile", ""), record.get("BL_Number", ""))
+        summary_by_key[key] = record
         combined.append({"RecordType": "BL Summary", **record})
-    for record in containers:
-        combined.append({"RecordType": "Container", **record})
-    for record in packages:
-        combined.append({"RecordType": "Package", **record})
-    for record in pricing:
-        combined.append({"RecordType": "Pricing", **record})
+
+    def merge_nonempty(*records):
+        """Merge dictionaries in order, ignoring blank values in later records.
+        This prevents empty XML detail fields from erasing BL Summary values.
+        """
+        result = {}
+        for record in records:
+            for name, value in record.items():
+                if value is not None and str(value).strip() != "":
+                    result[name] = value
+                elif name not in result:
+                    result[name] = value
+        return result
+
+    containers_by_key = {}
+    for container in containers:
+        key = (container.get("SourceFile", ""), container.get("BL_Number", ""))
+        containers_by_key.setdefault(key, []).append(container)
+
+    def add_detail_rows(record_type, records):
+        for detail in records:
+            key = (detail.get("SourceFile", ""), detail.get("BL_Number", ""))
+            bl_summary = summary_by_key.get(key, {})
+            if record_type == "Pricing":
+                # Pricing belongs to a BL. Repeat each pricing item for every
+                # container on that BL so BL and container information are present
+                # on every price row. If no container exists, still export price.
+                related_containers = containers_by_key.get(key, [])
+                if related_containers:
+                    for container in related_containers:
+                        row = merge_nonempty(bl_summary, container, detail)
+                        row["RecordType"] = "Pricing"
+                        combined.append(row)
+                else:
+                    row = merge_nonempty(bl_summary, detail)
+                    row["RecordType"] = "Pricing"
+                    combined.append(row)
+            else:
+                row = merge_nonempty(bl_summary, detail)
+                row["RecordType"] = record_type
+                combined.append(row)
+
+    add_detail_rows("Container", containers)
+    add_detail_rows("Package", packages)
+    add_detail_rows("Pricing", pricing)
 
     wb = Workbook()
     ws = wb.active
