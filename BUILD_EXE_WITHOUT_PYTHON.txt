@@ -1,0 +1,38 @@
+BUILD THE WINDOWS EXE WITHOUT INSTALLING PYTHON ON YOUR PC
+========================================================
+
+This project includes a GitHub Actions workflow that builds the EXE on a Windows
+build computer in the cloud. Your PC does not need Python for this method.
+You do need a GitHub account and must upload the project files to a repository.
+
+1. Open https://github.com and sign in or create an account.
+2. Create a NEW repository. Name it HDASCO-Extractor. For easiest setup, choose Private.
+3. On the new repository page, choose Add file > Upload files.
+4. Extract this ZIP on your PC first. Upload the project files and folders from inside
+   HDASCO_Python_Extractor. Include the hidden .github folder and its workflows folder.
+   If the website makes the hidden .github folder difficult to upload, create it in the
+   repository using Add file > Create new file and enter this path as the filename:
+   .github/workflows/build-windows.yml
+   Then paste the contents of the build-windows.yml file from this project.
+5. Commit the uploaded files to the main branch.
+6. In the repository, click the Actions tab.
+7. Select "Build HDASCO Windows EXE" on the left. Click "Run workflow" and then the green
+   Run workflow button. If it already ran after your commit, open the latest successful run.
+8. Wait until the run finishes with a green check mark.
+9. Open that run and find the Artifacts section near the bottom.
+10. Download HDASCO_Extractor_Windows_x64.zip and extract it. It contains
+    HDASCO_Extractor.exe.
+
+RUNNING THE EXE
+---------------
+- Google Chrome must be installed.
+- Run HDASCO_Extractor.exe, open HDASCO in the dedicated Chrome window, sign in,
+  navigate to the required BR List or BL List page, then connect from the app.
+- Export files are saved under Documents\HDASCO_Exports.
+
+IMPORTANT
+---------
+The cloud build packages the current project into an EXE; it does not prove that every
+HDASCO callback works with your live account. Start with one page and verify the Excel
+output. Do not upload passwords, cookies, or private HDASCO data to GitHub. The project
+code does not need your login details. Keep the repository Private if you use GitHub.
