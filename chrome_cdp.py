@@ -70,6 +70,37 @@ class ChromeCDP:
         obj.call("Runtime.enable")
         return obj
 
+    @classmethod
+    def connect_matching_url(cls, url_fragment, timeout_seconds=12):
+        """Connect to a Chrome page whose URL contains the supplied fragment."""
+        try:
+            import websocket
+        except ImportError:
+            raise RuntimeError("Missing package websocket-client. Run: pip install -r requirements.txt")
+        deadline = time.time() + timeout_seconds
+        last_error = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(DEBUG_ADDRESS + "/json", timeout=3) as r:
+                    targets = json.loads(r.read().decode("utf-8"))
+                target = next((t for t in targets if t.get("type") == "page"
+                               and t.get("webSocketDebuggerUrl")
+                               and url_fragment.lower() in t.get("url", "").lower()), None)
+                if target:
+                    ws = websocket.create_connection(target["webSocketDebuggerUrl"], timeout=10,
+                                                     origin="http://localhost")
+                    ws.settimeout(15)
+                    obj = cls(ws)
+                    obj.target_id = target.get("id")
+                    obj.call("Page.enable")
+                    obj.call("Runtime.enable")
+                    return obj
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.35)
+        suffix = f" Details: {last_error}" if last_error else ""
+        raise TimeoutError(f"Could not find a Chrome tab containing {url_fragment!r}.{suffix}")
+
     def call(self, method, params=None, timeout=15):
         self.seq += 1
         ident = self.seq

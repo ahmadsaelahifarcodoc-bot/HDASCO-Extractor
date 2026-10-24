@@ -112,43 +112,53 @@ def download_bl_xmls(cdp, pages, delay, export_dir, log):
             if key in seen:
                 continue
             seen.add(key)
-            before_url = cdp.current_url()
-            # Click one actual site button to preserve the site's Anthem postback/session.
             cdp.evaluate(f"""(() => {{
               const b=document.getElementById({json.dumps(btn.get('id',''))}) ||
                 [...document.querySelectorAll('input,button')].find(x=>x.name==={json.dumps(btn.get('name',''))});
               if(!b) return false; b.click(); return true;
             }})()""")
-            time.sleep(max(delay, 1.5))
-            current = cdp.current_url()
-            if "ViewBLXMLFile.aspx" in current:
-                xml_text = cdp.evaluate("document.documentElement.innerText || document.body.innerText || ''") or ""
+            time.sleep(max(delay, 1.0))
+            xml_cdp = None
+            try:
+                # HDASCO commonly opens ViewBLXMLFile.aspx in a NEW Chrome tab.
+                xml_cdp = cdp.connect_matching_url("ViewBLXMLFile.aspx", timeout_seconds=max(10, int(delay) + 8))
+                current = xml_cdp.current_url()
+                xml_text = xml_cdp.evaluate("new XMLSerializer().serializeToString(document)") or ""
                 if not xml_text.strip().startswith("<"):
-                    xml_text = cdp.evaluate("document.documentElement.outerHTML") or xml_text
-                match = re.search(r"<Data[\s>]", xml_text)
+                    xml_text = xml_cdp.evaluate("document.documentElement.outerHTML || document.documentElement.innerText || ''") or ""
+                match = re.search(r"<Data(?:\s|>)", xml_text)
                 if match:
                     xml_text = xml_text[match.start():]
-                name = re.sub(r"[^A-Za-z0-9._-]+", "_", parse_qs(urlparse(current).query).get("data", [f"BL_page{page}_row{ix}"])[0])
+                if not xml_text.strip().startswith("<"):
+                    raise RuntimeError("The XML tab opened, but its document content could not be read.")
+                query_data = parse_qs(urlparse(current).query).get("data", [""])[0]
+                # Prefer the BL number in the XML itself; fall back to the query parameter or row number.
+                bl_match = re.search(r"<BL(?:No|Number)?>([^<]+)</BL(?:No|Number)?", xml_text, re.I)
+                candidate = bl_match.group(1).strip() if bl_match else (query_data or f"BL_page{page}_row{ix}")
+                name = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate).strip("._") or f"BL_page{page}_row{ix}"
                 if not name.lower().endswith(".xml"):
                     name += ".xml"
                 path = xml_dir / name
+                if path.exists():
+                    path = xml_dir / f"{path.stem}_{total+1}{path.suffix}"
                 path.write_text(xml_text, encoding="utf-8")
+                # Verify saved content is well-formed before reporting success.
+                ET.parse(path)
                 total += 1
                 log(f"Saved XML {total}: {path.name}")
-                # Return to BL list. Session and current filters are preserved only if site supports it.
-                cdp.navigate("https://my.hdasco.com/Packages/Documentation/BLList.aspx")
-                time.sleep(max(delay, 1.5))
-            else:
-                # Some versions open XML in a new tab or use a callback without navigation.
-                log(f"Clicked GET XML row {ix}; no XML document detected in the current tab. Check Chrome tabs/downloads.")
-                time.sleep(0.5)
+            except Exception as exc:
+                log(f"Could not save XML for GET XML row {ix}: {exc}")
+            finally:
+                if xml_cdp:
+                    xml_cdp.close()
+            time.sleep(0.3)
         if page < pages:
             if not _click_pagination(cdp, page + 1):
                 log(f"Could not find page {page+1}; stopping after current page.")
                 break
             time.sleep(max(delay, 1.0))
     if total == 0:
-        raise RuntimeError("No XML files were captured. The site may open XML in a new tab or use a callback; this needs a live-page adjustment.")
+        raise RuntimeError("No XML files were saved. Check that the XML tabs opened and that you are logged in to HDASCO.")
     return f"Saved {total} XML file(s) in {xml_dir}"
 
 
