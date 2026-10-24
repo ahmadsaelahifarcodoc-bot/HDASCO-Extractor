@@ -58,3 +58,6 @@ NOTES
   that XML was not captured, send the exact message and describe what Chrome did.
 - Pricing and package extraction depend on the actual tag names in the downloaded XML.
   If a worksheet is empty, inspect a sample XML and update the parser to match its tags.
+
+
+UPDATED EXCEL OUTPUT: The exporter now creates one worksheet named "All BL Data" in HDASCO_BL_Export.xlsx. The RecordType column labels rows as BL Summary, Container, Package, or Pricing. Use Excel filters to view each record type.

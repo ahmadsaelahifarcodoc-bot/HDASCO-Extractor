@@ -254,16 +254,33 @@ def export_xml_folder(xml_dir, export_dir, log):
             for node in price_nodes:
                 if id(node) not in known_ids and _has_content(node):
                     pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
+    # Combine every record type into one worksheet. Each row is tagged so the
+    # user can filter BL, container, package, or pricing records in Excel.
     output = Path(export_dir) / "HDASCO_BL_Export.xlsx"
+    combined = []
+    for record in summary:
+        combined.append({"RecordType": "BL Summary", **record})
+    for record in containers:
+        combined.append({"RecordType": "Container", **record})
+    for record in packages:
+        combined.append({"RecordType": "Package", **record})
+    for record in pricing:
+        combined.append({"RecordType": "Pricing", **record})
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "BL Summary"
-    _write_dicts(ws, summary)
-    for name, rows in [("Container Details", containers), ("Cargo Packages", packages), ("Pricing Details", pricing)]:
-        _write_dicts(wb.create_sheet(name), rows)
+    ws.title = "All BL Data"
+    _write_dicts(ws, combined)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    # Make columns readable without excessively widening long XML fields.
+    for column_cells in ws.columns:
+        column_letter = column_cells[0].column_letter
+        max_len = max((len(str(cell.value or "")) for cell in column_cells[:200]), default=10)
+        ws.column_dimensions[column_letter].width = min(max(max_len + 2, 12), 32)
     wb.save(output)
     log(f"Excel workbook saved: {output}")
-    return f"{len(xml_files)} XML file(s) processed; workbook: {output}"
+    return f"{len(xml_files)} XML file(s) processed; {len(combined)} combined row(s); workbook: {output}"
 
 
 def _write_dicts(ws, records):
