@@ -1,6 +1,7 @@
 """HDASCO extraction helpers. Site-specific callbacks can change, so scripts validate the page before acting."""
 import json
 import re
+import html
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -123,18 +124,34 @@ def download_bl_xmls(cdp, pages, delay, export_dir, log):
                 # HDASCO commonly opens ViewBLXMLFile.aspx in a NEW Chrome tab.
                 xml_cdp = cdp.connect_matching_url("ViewBLXMLFile.aspx", timeout_seconds=max(10, int(delay) + 8))
                 current = xml_cdp.current_url()
-                xml_text = xml_cdp.evaluate("new XMLSerializer().serializeToString(document)") or ""
-                if not xml_text.strip().startswith("<"):
-                    xml_text = xml_cdp.evaluate("document.documentElement.outerHTML || document.documentElement.innerText || ''") or ""
-                match = re.search(r"<Data(?:\s|>)", xml_text)
-                if match:
-                    xml_text = xml_text[match.start():]
-                if not xml_text.strip().startswith("<"):
-                    raise RuntimeError("The XML tab opened, but its document content could not be read.")
-                query_data = parse_qs(urlparse(current).query).get("data", [""])[0]
-                # Prefer the BL number in the XML itself; fall back to the query parameter or row number.
-                bl_match = re.search(r"<BL(?:No|Number)?>([^<]+)</BL(?:No|Number)?", xml_text, re.I)
-                candidate = bl_match.group(1).strip() if bl_match else (query_data or f"BL_page{page}_row{ix}")
+                # Fetch the server response text, not Chrome's rendered XML-viewer DOM.
+                # The viewer DOM can append HTML after </Data>, which breaks XML parsing.
+                xml_text = xml_cdp.evaluate(
+                    "fetch(location.href, {cache:'no-store'}).then(r => { if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })",
+                    await_promise=True, timeout=30
+                ) or ""
+                xml_text = xml_text.lstrip("\ufeff\r\n\t ")
+                # Some HDASCO/Chrome combinations expose the XML viewer wrapper rather
+                # than the response body. Recover the actual Data document, never save
+                # the surrounding HTML as an .xml file.
+                if "<Data" not in xml_text and "&lt;Data" in xml_text:
+                    xml_text = html.unescape(xml_text)
+                data_start = re.search(r"<Data\b", xml_text, re.I)
+                if data_start:
+                    data_end = re.search(r"</Data\s*>", xml_text[data_start.start():], re.I)
+                    if data_end:
+                        xml_text = xml_text[data_start.start():data_start.start() + data_end.end()]
+                xml_text = xml_text.strip()
+                if not xml_text.startswith("<Data"):
+                    raise RuntimeError("The opened tab did not contain a recoverable <Data> XML document; check the tab response/login.")
+                # Validate before saving, so browser-viewer HTML cannot be mistaken for an XML file.
+                root = ET.fromstring(xml_text)
+                bl_nodes = root.findall(".//BLNO") + root.findall(".//BLNo") + root.findall(".//BLNumber")
+                bl_value = next(((n.text or '').strip() for n in bl_nodes if (n.text or '').strip()), '')
+                if not bl_value:
+                    bl_match = re.search(r"<(?:BLNO|BLNo|BLNumber)>([^<]+)", xml_text, re.I)
+                    bl_value = bl_match.group(1).strip() if bl_match else ''
+                candidate = bl_value or f"BL_page{page}_row{ix}"
                 name = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate).strip("._") or f"BL_page{page}_row{ix}"
                 if not name.lower().endswith(".xml"):
                     name += ".xml"
@@ -142,8 +159,6 @@ def download_bl_xmls(cdp, pages, delay, export_dir, log):
                 if path.exists():
                     path = xml_dir / f"{path.stem}_{total+1}{path.suffix}"
                 path.write_text(xml_text, encoding="utf-8")
-                # Verify saved content is well-formed before reporting success.
-                ET.parse(path)
                 total += 1
                 log(f"Saved XML {total}: {path.name}")
             except Exception as exc:
@@ -201,17 +216,21 @@ def export_xml_folder(xml_dir, export_dir, log):
                 c = _all_text(container)
                 cno = c.get("ContainerNo") or c.get("ContainerNumber") or c.get("No") or ""
                 containers.append({"SourceFile": file.name, "BL_Number": bl_no, **c})
-                pkg_nodes = container.findall(".//Package") + container.findall(".//Packages/Package")
+                pkg_nodes = (container.findall(".//Package") + container.findall(".//Packages/Package")
+                             + container.findall(".//CargoInfo"))
                 if not pkg_nodes:
                     packages.append({"SourceFile": file.name, "BL_Number": bl_no, "ContainerNo": cno,
                                      "Package": "", "Note": "No Package element detected"})
                 for pkg in pkg_nodes:
                     packages.append({"SourceFile": file.name, "BL_Number": bl_no, "ContainerNo": cno, **_all_text(pkg)})
-            for node in bl.findall(".//Pricing/*"):
+            for node in bl.findall(".//Pricing/*") + bl.findall(".//PricingData/*"):
                 pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
-            # Flexible fallback for common pricing/cost structures.
-            for node in bl.findall(".//Price") + bl.findall(".//Rate") + bl.findall(".//Charge"):
-                pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
+            # Flexible fallback for common pricing/cost structures, avoiding duplicate Price nodes.
+            price_nodes = bl.findall(".//Price") + bl.findall(".//Rate") + bl.findall(".//Charge")
+            known_ids = {id(n) for n in bl.findall(".//Pricing/*") + bl.findall(".//PricingData/*")}
+            for node in price_nodes:
+                if id(node) not in known_ids:
+                    pricing.append({"SourceFile": file.name, "BL_Number": bl_no, "PricingType": node.tag, **_all_text(node)})
     output = Path(export_dir) / "HDASCO_BL_Export.xlsx"
     wb = Workbook()
     ws = wb.active
